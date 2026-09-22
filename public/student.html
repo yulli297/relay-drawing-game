@@ -1,0 +1,337 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>릴레이 그림 그리기</title>
+<style>
+  :root {
+    --bg: #16213e;
+    --panel: #1f2b52;
+    --accent: #ff9f5a;
+    --accent2: #5ad1a8;
+    --text: #f4f1ea;
+    --muted: #93a0c9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; min-height: 100vh; background: var(--bg); color: var(--text);
+    font-family: -apple-system, 'Pretendard', 'Malgun Gothic', sans-serif;
+    display: flex; align-items: center; justify-content: center;
+    padding: 16px;
+  }
+  .card {
+    background: var(--panel); border-radius: 20px; padding: 24px;
+    width: 100%; max-width: 480px; text-align: center;
+  }
+  h1 { font-size: 20px; margin: 0 0 16px; }
+  .big-number { font-size: 48px; font-weight: 800; color: var(--accent); }
+  select, input[type=text] {
+    font-size: 18px; padding: 10px 14px; border-radius: 12px; border: none;
+    width: 100%; margin: 8px 0;
+  }
+  button {
+    font-size: 18px; padding: 12px 20px; border-radius: 12px; border: none;
+    background: var(--accent); color: #16213e; font-weight: 700;
+    cursor: pointer; margin-top: 8px; width: 100%;
+  }
+  button:disabled { opacity: 0.4; }
+  button.secondary { background: var(--accent2); }
+  .word-box {
+    font-size: 28px; font-weight: 800; margin: 12px 0;
+    padding: 12px; border-radius: 14px; background: #0f172e;
+  }
+  .timer { font-size: 32px; font-weight: 800; color: var(--accent2); margin: 8px 0; }
+  #canvas-wrap { touch-action: none; }
+  canvas {
+    background: white; border-radius: 12px; width: 100%; height: 320px;
+    touch-action: none; display: block; margin-top: 8px;
+  }
+  .palette { display: flex; gap: 8px; justify-content: center; margin-top: 10px; flex-wrap: wrap; }
+  .swatch {
+    width: 32px; height: 32px; border-radius: 50%; border: 3px solid transparent; cursor: pointer;
+  }
+  .swatch.selected { border-color: var(--text); }
+  .thickness { display: flex; gap: 8px; justify-content: center; margin-top: 8px; }
+  .thickness button {
+    width: auto; flex: 1; background: #0f172e; color: var(--text);
+  }
+  .thickness button.selected { background: var(--accent); color: #16213e; }
+  .hidden { display: none !important; }
+  .peek-img { width: 100%; border-radius: 12px; margin-top: 10px; }
+  .status { color: var(--muted); font-size: 15px; margin-top: 10px; }
+  .score-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2b3a66; }
+  .score-row.me { color: var(--accent); font-weight: 800; }
+</style>
+</head>
+<body>
+<div class="card">
+
+  <!-- 1) 번호 선택 화면 -->
+  <div id="screen-join">
+    <h1>내 번호를 골라주세요</h1>
+    <select id="number-select">
+      <option value="">-- 번호 선택 --</option>
+    </select>
+    <button id="join-btn">입장하기</button>
+    <div class="status" id="join-status"></div>
+  </div>
+
+  <!-- 2) 대기 화면 -->
+  <div id="screen-waiting" class="hidden">
+    <h1>대기 중이에요</h1>
+    <div class="big-number" id="my-number-display"></div>
+    <div class="status" id="waiting-status">선생님이 게임을 시작하면 알려드릴게요.</div>
+  </div>
+
+  <!-- 3) 내가 그리는 화면 -->
+  <div id="screen-drawing" class="hidden">
+    <div class="timer" id="timer">20</div>
+    <div class="word-box" id="word-box"></div>
+    <div id="canvas-wrap">
+      <canvas id="canvas" width="500" height="320"></canvas>
+    </div>
+    <div class="palette" id="palette"></div>
+    <div class="thickness" id="thickness"></div>
+    <button id="finish-btn" class="secondary">다 그렸어요!</button>
+  </div>
+
+  <!-- 4) 다른 사람이 그리는 중 (블라인드) -->
+  <div id="screen-blind" class="hidden">
+    <h1><span id="blind-drawer-num"></span>번 학생이 그리는 중...</h1>
+    <div class="status">그림이 완성되면 잠깐 보여드릴게요</div>
+  </div>
+
+  <!-- 5) 짧은 미리보기 (턴과 턴 사이) -->
+  <div id="screen-peek" class="hidden">
+    <h1>그림 살짝 공개! (<span id="peek-count"></span>초)</h1>
+    <img id="peek-img" class="peek-img">
+  </div>
+
+  <!-- 6) 4명이 다 그린 뒤: 완성된 그림 보고 정답 제출 -->
+  <div id="screen-guess-final" class="hidden">
+    <h1>정답을 맞혀보세요!</h1>
+    <img id="final-img" class="peek-img">
+    <input type="text" id="guess-input-final" placeholder="정답이라고 생각하는 단어">
+    <button id="guess-btn-final">제출하기</button>
+    <div class="status" id="guess-status-final"></div>
+  </div>
+
+  <!-- 7) 최종 결과 -->
+  <div id="screen-finished" class="hidden">
+    <h1>게임 끝! 최종 순위</h1>
+    <div id="score-list"></div>
+  </div>
+
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket = io();
+let myNumber = null;
+let currentColor = '#16213e';
+let currentWidth = 4;
+let drawing = false;
+let lastPoint = null;
+
+const screens = ['join','waiting','drawing','blind','peek','guess-final','finished'];
+function show(name) {
+  screens.forEach(s => document.getElementById('screen-'+s).classList.toggle('hidden', s !== name));
+}
+
+// 번호 선택 목록 채우기
+const select = document.getElementById('number-select');
+for (let i = 1; i <= 24; i++) {
+  const opt = document.createElement('option');
+  opt.value = i; opt.textContent = i + '번';
+  select.appendChild(opt);
+}
+
+document.getElementById('join-btn').onclick = () => {
+  const val = select.value;
+  if (!val) { document.getElementById('join-status').textContent = '번호를 선택해주세요.'; return; }
+  socket.emit('join-student', val);
+};
+
+socket.on('join-error', (msg) => {
+  document.getElementById('join-status').textContent = msg;
+});
+
+socket.on('joined', (num) => {
+  myNumber = num;
+  document.getElementById('my-number-display').textContent = num + '번';
+  show('waiting');
+});
+
+// ---- 캔버스 그리기 ----
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+function resizeCanvas() {
+  const ratio = window.devicePixelRatio || 1;
+  const cssW = canvas.clientWidth, cssH = canvas.clientHeight;
+  canvas.width = cssW * ratio; canvas.height = cssH * ratio;
+  ctx.scale(ratio, ratio);
+}
+
+const colors = ['#16213e','#e63946','#f4a340','#ffd23f','#5ad1a8','#4361ee'];
+const paletteDiv = document.getElementById('palette');
+colors.forEach((c, i) => {
+  const sw = document.createElement('div');
+  sw.className = 'swatch' + (i === 0 ? ' selected' : '');
+  sw.style.background = c;
+  sw.onclick = () => {
+    currentColor = c;
+    [...paletteDiv.children].forEach(el => el.classList.remove('selected'));
+    sw.classList.add('selected');
+  };
+  paletteDiv.appendChild(sw);
+});
+// 지우개(흰색) 추가
+const eraser = document.createElement('div');
+eraser.className = 'swatch';
+eraser.style.background = 'white';
+eraser.style.border = '3px solid #93a0c9';
+eraser.onclick = () => {
+  currentColor = 'white';
+  [...paletteDiv.children].forEach(el => el.classList.remove('selected'));
+  eraser.classList.add('selected');
+};
+paletteDiv.appendChild(eraser);
+
+const thicknessDiv = document.getElementById('thickness');
+[['얇게',3], ['보통',6], ['굵게',12]].forEach(([label, w], i) => {
+  const btn = document.createElement('button');
+  btn.textContent = label;
+  if (i === 0) btn.classList.add('selected');
+  btn.onclick = () => {
+    currentWidth = w;
+    [...thicknessDiv.children].forEach(el => el.classList.remove('selected'));
+    btn.classList.add('selected');
+  };
+  thicknessDiv.appendChild(btn);
+});
+
+function getPos(e) {
+  const rect = canvas.getBoundingClientRect();
+  const t = e.touches ? e.touches[0] : e;
+  return { x: t.clientX - rect.left, y: t.clientY - rect.top };
+}
+function startDraw(e) {
+  e.preventDefault();
+  drawing = true;
+  lastPoint = getPos(e);
+}
+function moveDraw(e) {
+  if (!drawing) return;
+  e.preventDefault();
+  const p = getPos(e);
+  ctx.strokeStyle = currentColor;
+  ctx.lineWidth = currentWidth;
+  ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(lastPoint.x, lastPoint.y);
+  ctx.lineTo(p.x, p.y);
+  ctx.stroke();
+  const w = canvas.clientWidth, h = canvas.clientHeight;
+  socket.emit('draw-stroke', {
+    from: { fx: lastPoint.x / w, fy: lastPoint.y / h },
+    to: { fx: p.x / w, fy: p.y / h },
+    color: currentColor,
+    widthFrac: currentWidth / w,
+  });
+  lastPoint = p;
+}
+function endDraw() { drawing = false; }
+canvas.addEventListener('mousedown', startDraw);
+canvas.addEventListener('mousemove', moveDraw);
+window.addEventListener('mouseup', endDraw);
+canvas.addEventListener('touchstart', startDraw);
+canvas.addEventListener('touchmove', moveDraw);
+canvas.addEventListener('touchend', endDraw);
+
+document.getElementById('finish-btn').onclick = () => {
+  socket.emit('finish-early', canvas.toDataURL());
+};
+
+// ---- 서버 이벤트 ----
+socket.on('your-turn', ({ word, seconds, baseImage }) => {
+  document.getElementById('word-box').textContent = word;
+  document.getElementById('timer').textContent = seconds;
+  show('drawing'); // 화면을 먼저 보이게 한 뒤에 캔버스 크기를 계산해야 정상 크기가 잡힘
+  requestAnimationFrame(() => {
+    resizeCanvas();
+    ctx.clearRect(0, 0, canvas.clientWidth, canvas.clientHeight);
+    if (baseImage) {
+      // 이전 학생까지 그려진 그림을 불러와서 이어 그릴 수 있게 함
+      const img = new Image();
+      img.onload = () => ctx.drawImage(img, 0, 0, canvas.clientWidth, canvas.clientHeight);
+      img.src = baseImage;
+    }
+  });
+});
+
+socket.on('tick', (sec) => {
+  const t = document.getElementById('timer');
+  if (t) t.textContent = Math.max(sec, 0);
+});
+
+// 시간이 다 되면 서버가 마지막 그림을 요청함 - 자동으로 지금까지 그린 걸 제출
+socket.on('time-up', () => {
+  socket.emit('finish-early', canvas.toDataURL());
+});
+
+socket.on('state', (st) => {
+  if (myNumber === null) return;
+  if (st.phase === 'finished') {
+    const list = document.getElementById('score-list');
+    list.innerHTML = '';
+    const sorted = Object.entries(st.scores).sort((a,b) => b[1]-a[1]);
+    sorted.forEach(([num, score]) => {
+      const row = document.createElement('div');
+      row.className = 'score-row' + (Number(num) === myNumber ? ' me' : '');
+      row.textContent = `${num}번 - ${score}점`;
+      list.appendChild(row);
+    });
+    show('finished');
+    return;
+  }
+  const iAmDrawing = st.currentDrawer === myNumber;
+  const iAmDrawerThisRound = st.drawerOrder.includes(myNumber);
+  if (st.phase === 'drawing' && !iAmDrawing) {
+    // 라운드 진행 중에는 화가가 아닌 학생도 그냥 블라인드 상태 - 정답 제출은 아직 불가
+    document.getElementById('blind-drawer-num').textContent = st.currentDrawer;
+    show('blind');
+  } else if (st.phase === 'guessing') {
+    if (iAmDrawerThisRound) {
+      // 이번 라운드에 그린 학생은 정답 제출 불가 - 대기
+      document.getElementById('waiting-status').textContent = '다른 친구들이 정답을 맞히는 중이에요.';
+      show('waiting');
+    } else {
+      show('guess-final');
+    }
+  } else if (st.phase === 'lobby') {
+    show('waiting');
+  }
+});
+
+socket.on('peek', ({ snapshot, seconds }) => {
+  if (!snapshot) return; // 아직 아무도 안 그려서 그림이 없는 경우
+  document.getElementById('peek-img').src = snapshot;
+  document.getElementById('peek-count').textContent = seconds;
+  show('peek');
+});
+
+// 4명이 다 그린 뒤 완성된 최종 그림 - 정답 제출 화면에 계속 띄워둠
+socket.on('final-image', (snapshot) => {
+  if (snapshot) document.getElementById('final-img').src = snapshot;
+});
+
+document.getElementById('guess-btn-final').onclick = () => {
+  const val = document.getElementById('guess-input-final').value.trim();
+  if (!val) return;
+  socket.emit('submit-guess', val);
+  document.getElementById('guess-status-final').textContent = '제출했어요: ' + val;
+};
+</script>
+</body>
+</html>

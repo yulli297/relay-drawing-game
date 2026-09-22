@@ -1,0 +1,13 @@
+{
+  "name": "relay-drawing-game",
+  "version": "1.0.0",
+  "description": "24명 학급용 릴레이 그림 그리기 스파이 게임",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

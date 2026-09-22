@@ -1,0 +1,218 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>선생님 화면 - 릴레이 그림 그리기</title>
+<style>
+  :root {
+    --bg: #0f172e; --panel: #1f2b52; --accent: #ff9f5a; --accent2: #5ad1a8;
+    --danger: #e63946; --text: #f4f1ea; --muted: #93a0c9;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text);
+    font-family: -apple-system, 'Pretendard', 'Malgun Gothic', sans-serif;
+    padding: 16px;
+  }
+  h1 { font-size: 22px; }
+  .layout { display: flex; gap: 16px; flex-wrap: wrap; }
+  .panel { background: var(--panel); border-radius: 16px; padding: 16px; }
+  .left { flex: 1 1 480px; }
+  .right { flex: 1 1 340px; }
+  canvas { background: white; border-radius: 12px; width: 100%; height: 360px; }
+  button {
+    font-size: 16px; padding: 10px 16px; border-radius: 10px; border: none;
+    background: var(--accent); color: #0f172e; font-weight: 700; cursor: pointer;
+    margin: 4px 4px 4px 0;
+  }
+  button.secondary { background: var(--accent2); }
+  button.danger { background: var(--danger); color: white; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  .badge {
+    display: inline-block; padding: 4px 10px; border-radius: 999px;
+    font-size: 14px; font-weight: 700; margin-left: 8px;
+  }
+  .badge.spy { background: var(--danger); }
+  .badge.normal { background: var(--accent2); color: #0f172e; }
+  .big-timer { font-size: 40px; font-weight: 800; color: var(--accent); }
+  .guess-row {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 8px; background: #16213e; border-radius: 10px; margin-bottom: 8px;
+  }
+  .guess-row .name { font-weight: 700; }
+  .guess-row .buttons button { padding: 6px 10px; margin: 0 0 0 4px; }
+  select { font-size: 15px; padding: 8px; border-radius: 8px; border: none; }
+  .status { color: var(--muted); font-size: 14px; margin-top: 6px; }
+  .score-row { display: flex; justify-content: space-between; padding: 6px 0; border-bottom: 1px solid #2b3a66; }
+  .hidden { display: none !important; }
+</style>
+</head>
+<body>
+
+<h1>🎨 릴레이 그림 그리기 - 선생님 화면</h1>
+
+<!-- 로비 -->
+<div id="lobby" class="panel">
+  <div>접속한 학생: <span id="connected-count">0</span> / 24</div>
+  <button id="start-btn">게임 시작</button>
+</div>
+
+<div class="layout hidden" id="game-area">
+  <div class="panel left">
+    <div>
+      <span id="round-label"></span>
+      <span id="spy-badge" class="badge hidden"></span>
+    </div>
+    <div class="big-timer" id="big-timer"></div>
+    <div class="status" id="drawer-word-info"></div>
+    <canvas id="mirror-canvas" width="700" height="360"></canvas>
+    <div style="margin-top:10px;">
+      <button id="substitute-btn" class="danger">대타 투입 (접속 끊긴 학생 대신)</button>
+    </div>
+    <div style="margin-top:10px;" id="returning-area">
+      <select id="returning-select"><option value="">-- 복귀 학생 추가 --</option></select>
+      <button id="returning-btn" class="secondary">추가 참여시키기</button>
+    </div>
+    <div class="status" id="action-status"></div>
+  </div>
+
+  <div class="panel right">
+    <h3>정답 제출 현황</h3>
+    <div id="guess-list"></div>
+    <button id="next-round-btn" class="secondary" disabled>다음 라운드로</button>
+  </div>
+</div>
+
+<div class="panel hidden" id="finished-panel">
+  <h2>최종 결과</h2>
+  <div id="final-scores"></div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket = io();
+socket.emit('join-teacher');
+
+const canvas = document.getElementById('mirror-canvas');
+const ctx = canvas.getContext('2d');
+
+document.getElementById('start-btn').onclick = () => {
+  socket.emit('start-game');
+  document.getElementById('lobby').classList.add('hidden');
+  document.getElementById('game-area').classList.remove('hidden');
+};
+
+document.getElementById('substitute-btn').onclick = () => {
+  socket.emit('insert-substitute');
+};
+socket.on('substitute-result', (r) => {
+  document.getElementById('action-status').textContent = r.ok
+    ? `${r.originalDrawer}번 대신 ${r.sub}번 학생이 대타로 들어갔어요.`
+    : r.reason;
+});
+
+document.getElementById('returning-btn').onclick = () => {
+  const val = document.getElementById('returning-select').value;
+  if (!val) return;
+  socket.emit('add-returning-student', val);
+};
+socket.on('add-returning-result', (r) => {
+  document.getElementById('action-status').textContent = r.ok
+    ? '복귀 학생을 추가했어요.' : r.reason;
+});
+
+document.getElementById('next-round-btn').onclick = () => {
+  socket.emit('next-round');
+};
+
+socket.on('drawer-info', ({ drawer, isSpy, word, baseImage }) => {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  if (baseImage) {
+    // 이전 학생까지 그려진 그림을 이어서 보여줌 (릴레이 진행 상황)
+    const img = new Image();
+    img.onload = () => ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    img.src = baseImage;
+  }
+  document.getElementById('drawer-word-info').textContent =
+    `지금 그리는 학생: ${drawer}번 · 제시어: ${word}`;
+  const badge = document.getElementById('spy-badge');
+  if (isSpy) {
+    badge.textContent = '⚠️ 이 학생이 스파이입니다';
+    badge.className = 'badge spy';
+  } else {
+    badge.textContent = '정상 제시어';
+    badge.className = 'badge normal';
+  }
+});
+
+socket.on('draw-stroke', ({ from, to, color, widthFrac }) => {
+  // 학생마다 화면 크기가 달라도 비율(fx,fy)로 받아서 이 캔버스 크기에 맞게 그림
+  const w = canvas.width, h = canvas.height;
+  ctx.strokeStyle = color; ctx.lineWidth = widthFrac * w; ctx.lineCap = 'round';
+  ctx.beginPath();
+  ctx.moveTo(from.fx * w, from.fy * h);
+  ctx.lineTo(to.fx * w, to.fy * h);
+  ctx.stroke();
+});
+socket.on('clear-canvas', () => ctx.clearRect(0, 0, canvas.width, canvas.height));
+
+socket.on('tick', (sec) => {
+  document.getElementById('big-timer').textContent = Math.max(sec, 0);
+});
+
+socket.on('guesses', (guesses) => {
+  const list = document.getElementById('guess-list');
+  list.innerHTML = '';
+  guesses.forEach((g) => {
+    const row = document.createElement('div');
+    row.className = 'guess-row';
+    row.innerHTML = `
+      <div><span class="name">${g.studentNumber}번</span>: ${g.guess}</div>
+      <div class="buttons">
+        <button data-num="${g.studentNumber}" data-correct="true" ${g.graded && g.correct ? 'disabled' : ''}>O</button>
+        <button data-num="${g.studentNumber}" data-correct="false" ${g.graded && !g.correct ? 'disabled' : ''}>X</button>
+      </div>`;
+    list.appendChild(row);
+  });
+  list.querySelectorAll('button').forEach((btn) => {
+    btn.onclick = () => {
+      socket.emit('grade-guess', {
+        studentNumber: btn.dataset.num,
+        correct: btn.dataset.correct === 'true',
+      });
+    };
+  });
+});
+
+socket.on('state', (st) => {
+  document.getElementById('connected-count').textContent = st.connectedStudents.length;
+  if (st.phase === 'finished') {
+    document.getElementById('game-area').classList.add('hidden');
+    document.getElementById('finished-panel').classList.remove('hidden');
+    const box = document.getElementById('final-scores');
+    box.innerHTML = '';
+    Object.entries(st.scores).sort((a,b) => b[1]-a[1]).forEach(([num, score]) => {
+      const row = document.createElement('div');
+      row.className = 'score-row';
+      row.textContent = `${num}번 - ${score}점`;
+      box.appendChild(row);
+    });
+    return;
+  }
+  if (st.round) {
+    document.getElementById('round-label').textContent = `라운드 ${st.round} / ${st.totalRounds}`;
+  }
+  document.getElementById('next-round-btn').disabled = st.phase !== 'guessing';
+
+  const sel = document.getElementById('returning-select');
+  sel.innerHTML = '<option value="">-- 복귀 학생 추가 --</option>';
+  (st.needsRedo || []).forEach((n) => {
+    const opt = document.createElement('option');
+    opt.value = n; opt.textContent = n + '번';
+    sel.appendChild(opt);
+  });
+});
+</script>
+</body>
+</html>
