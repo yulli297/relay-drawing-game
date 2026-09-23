@@ -50,7 +50,10 @@
 </head>
 <body>
 
-<h1>🎨 릴레이 그림 그리기 - 선생님 화면</h1>
+<div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px;">
+  <h1>🎨 릴레이 그림 그리기 - 선생님 화면</h1>
+  <button id="reset-btn" class="danger">🔄 새 게임</button>
+</div>
 
 <!-- 로비 -->
 <div id="lobby" class="panel">
@@ -99,9 +102,28 @@ const ctx = canvas.getContext('2d');
 
 document.getElementById('start-btn').onclick = () => {
   socket.emit('start-game');
-  document.getElementById('lobby').classList.add('hidden');
-  document.getElementById('game-area').classList.remove('hidden');
 };
+
+document.getElementById('reset-btn').onclick = () => {
+  const ok = confirm('정말 새 게임을 시작할까요?\n지금까지의 진행 상황과 점수가 모두 사라져요.\n(학생들 접속은 그대로 유지돼요)');
+  if (ok) socket.emit('reset-game');
+};
+
+socket.on('game-reset', () => {
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  document.getElementById('drawer-word-info').textContent = '';
+  document.getElementById('big-timer').textContent = '';
+  document.getElementById('round-label').textContent = '';
+  document.getElementById('spy-badge').className = 'badge hidden';
+  document.getElementById('action-status').textContent = '새 게임이 준비됐어요. 게임 시작을 눌러주세요.';
+});
+
+// 서버의 진행 단계에 맞춰 대기 / 게임 / 결과 화면 중 하나만 보여줌 (새로고침해도 정확히 복원)
+function syncPanels(phase) {
+  document.getElementById('lobby').classList.toggle('hidden', phase !== 'lobby');
+  document.getElementById('game-area').classList.toggle('hidden', phase === 'lobby' || phase === 'finished');
+  document.getElementById('finished-panel').classList.toggle('hidden', phase !== 'finished');
+}
 
 document.getElementById('substitute-btn').onclick = () => {
   socket.emit('insert-substitute');
@@ -187,9 +209,8 @@ socket.on('guesses', (guesses) => {
 
 socket.on('state', (st) => {
   document.getElementById('connected-count').textContent = st.connectedStudents.length;
+  syncPanels(st.phase);
   if (st.phase === 'finished') {
-    document.getElementById('game-area').classList.add('hidden');
-    document.getElementById('finished-panel').classList.remove('hidden');
     const box = document.getElementById('final-scores');
     box.innerHTML = '';
     Object.entries(st.scores).sort((a,b) => b[1]-a[1]).forEach(([num, score]) => {

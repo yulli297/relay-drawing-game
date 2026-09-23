@@ -22,12 +22,12 @@ app.use(express.static('public'));
 // 라운드가 6개니까 6줄이 필요해요.
 // ------------------------------------------------------------
 const WORD_LIST = [
-  { real: '농사 짓는 고양이', spy: '농사 짓는 호랑이' },
-  { real: '공부하는 학생들', spy: '게임하는 학생들' },
-  { real: '복싱하는 강아지', spy: '태권도하는 강아지' },
-  { real: '녹고 있는 얼음', spy: '프라이팬 위의 버터' },
-  { real: '학교 가는 학생', spy: '도망 가는 학생' },
-  { real: '비가 오는 운동장', spy: '비가 오는 호수' },
+  { real: '경찰차', spy: '구급차' },
+  { real: '피자', spy: '햄버거' },
+  { real: '눈사람', spy: '허수아비' },
+  { real: '축구공', spy: '농구공' },
+  { real: '기린', spy: '낙타' },
+  { real: '우산', spy: '양산' },
 ];
 
 const TOTAL_STUDENTS = 24;
@@ -102,6 +102,31 @@ function clearTimer() {
   state.timer = null;
 }
 
+// 게임 회차 번호: 초기화할 때마다 1씩 올라감.
+// 초기화 전에 예약돼 있던 "5초 뒤 다음 사람" 같은 동작이 새 게임에 끼어들지 않게 막는 용도
+let gameId = 0;
+
+// 새 게임: 진행 상황과 점수만 처음으로 되돌리고, 접속한 학생 목록은 그대로 유지
+function resetGame() {
+  clearTimer();
+  gameId += 1;
+  state.phase = 'lobby';
+  state.round = 0;
+  state.drawerOrder = [];
+  state.drawerIndex = 0;
+  state.spyNumber = null;
+  state.needsRedo = {};
+  state.currentGuesses = [];
+  state.secondsLeft = 0;
+  state.currentSnapshot = null;
+  state.pendingCapture = null;
+  for (let i = 1; i <= TOTAL_STUDENTS; i++) state.scores[i] = 0;
+  io.to('students').emit('game-reset');
+  io.to('teacher').emit('game-reset');
+  io.to('teacher').emit('guesses', []);
+  broadcastState();
+}
+
 // ------------------------------------------------------------
 // 라운드/턴 진행 로직
 // ------------------------------------------------------------
@@ -114,6 +139,7 @@ function startRound(round) {
   state.spyNumber = members[Math.floor(Math.random() * members.length)];
   state.currentGuesses = [];
   state.currentSnapshot = null; // 새 라운드는 빈 도화지에서 시작
+  io.to('teacher').emit('guesses', []); // 교사 화면의 이전 라운드 정답 목록 비우기
   startTurn();
 }
 
@@ -178,7 +204,11 @@ function requestFinalSnapshot() {
 
 // snapshot: 이번 턴까지 이어 그려진 최종 이미지(dataURL). 못 받으면 null.
 function endTurn(snapshot) {
+  // 그리는 중일 때만 턴을 끝낼 수 있음 (버튼을 두 번 누르는 등 중복 처리 방지)
+  if (state.phase !== 'drawing') return;
   clearTimer();
+  state.pendingCapture = null;
+  const myGameId = gameId;
   const drawer = state.drawerOrder[state.drawerIndex];
   // 그린 학생은 무조건 10점
   state.scores[drawer] = (state.scores[drawer] || 0) + 10;
@@ -191,6 +221,7 @@ function endTurn(snapshot) {
   broadcastState();
 
   setTimeout(() => {
+    if (myGameId !== gameId) return; // 그 사이에 선생님이 새 게임을 눌렀으면 아무것도 안 함
     if (state.drawerIndex < state.drawerOrder.length - 1) {
       state.drawerIndex += 1;
       startTurn();
@@ -218,6 +249,7 @@ function nextRound() {
 
 // 대타 투입: 지금 차례인 학생이 접속이 끊겼을 때, 교사가 랜덤으로 다른 학생을 그 자리에 넣음
 function insertSubstitute() {
+  if (state.phase !== 'drawing') return { ok: false, reason: '그림 그리는 중일 때만 대타를 넣을 수 있어요.' };
   const originalDrawer = state.drawerOrder[state.drawerIndex];
   const busy = new Set(state.drawerOrder);
   const candidates = Object.keys(state.students)
@@ -255,20 +287,36 @@ function addReturningStudent(studentNumber) {
 // Socket.io 연결 처리
 // ------------------------------------------------------------
 io.on('connection', (socket) => {
-  socket.on('join-student', (studentNumber) => {
-    studentNumber = Number(studentNumber);
+  // data: { number, clientId } - clientId는 같은 기기인지 알아보기 위한 기기별 고유값
+  socket.on('join-student', (data) => {
+    const studentNumber = Number(data && data.number);
+    const clientId = data && data.clientId;
     if (!studentNumber || studentNumber < 1 || studentNumber > TOTAL_STUDENTS) {
       socket.emit('join-error', '1~24 사이의 번호를 골라주세요.');
       return;
     }
-    if (state.students[studentNumber] && state.students[studentNumber].connected) {
+    const existing = state.students[studentNumber];
+    const sameDevice = existing && clientId && existing.clientId === clientId;
+    if (existing && existing.connected && !sameDevice) {
       socket.emit('join-error', '이미 다른 기기에서 접속 중인 번호예요.');
       return;
     }
-    state.students[studentNumber] = { socketId: socket.id, connected: true };
+    state.students[studentNumber] = { socketId: socket.id, connected: true, clientId };
     socket.data.studentNumber = studentNumber;
     socket.join('students');
     socket.emit('joined', studentNumber);
+
+    // 늦게 들어왔거나 다시 연결된 학생에게 지금 진행 상황을 맞춰서 보내줌
+    if (state.phase === 'drawing' && state.drawerOrder[state.drawerIndex] === studentNumber) {
+      const isSpy = studentNumber === state.spyNumber;
+      const wordSet = WORD_LIST[state.round - 1];
+      socket.emit('your-turn', {
+        word: isSpy ? wordSet.spy : wordSet.real,
+        seconds: state.secondsLeft,
+        baseImage: state.currentSnapshot,
+      });
+    }
+    if (state.phase === 'guessing') socket.emit('final-image', state.currentSnapshot);
     broadcastState();
   });
 
@@ -276,6 +324,24 @@ io.on('connection', (socket) => {
     socket.join('teacher');
     socket.emit('joined-teacher');
     socket.emit('state', teacherState());
+    socket.emit('guesses', state.currentGuesses);
+    // 교사가 게임 중에 새로고침해도 지금 그리는 학생 정보와 그림을 다시 받음
+    if (state.phase === 'drawing') {
+      const drawer = state.drawerOrder[state.drawerIndex];
+      const isSpy = drawer === state.spyNumber;
+      const wordSet = WORD_LIST[state.round - 1];
+      socket.emit('drawer-info', {
+        drawer,
+        isSpy,
+        word: isSpy ? wordSet.spy : wordSet.real,
+        baseImage: state.currentSnapshot,
+      });
+    }
+  });
+
+  socket.on('reset-game', () => {
+    if (!socket.rooms.has('teacher')) return; // 교사 화면에서만 가능
+    resetGame();
   });
 
   socket.on('start-game', () => {
